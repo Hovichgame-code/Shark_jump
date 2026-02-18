@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+  <title>Flappy Shark — мягче и чуть быстрее</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { height: 100%; margin: 0; background: #081e31; overflow: hidden; touch-action: none; -webkit-user-select: none; user-select: none; }
+    #game-wrap { height: 100%; width: 100%; display: grid; place-items: center; background: radial-gradient(120% 80% at 50% 20%, #0c375a 0%, #0a2d4b 40%, #08243e 70%, #061c31 100%); }
+    canvas { background: transparent; image-rendering: pixelated; image-rendering: crisp-edges; -ms-interpolation-mode: nearest-neighbor; box-shadow: 0 0 0 2px #052033, 0 16px 40px rgba(0,0,0,.45); border-radius: 8px; }
+    #overlay { position: fixed; inset: 0; display: none; place-items: center; backdrop-filter: blur(2px); }
+    #overlay.show { display: grid; }
+    .card { background: rgba(4,19,31,.9); color:#e7f6ff; border:2px solid #0c3d61; border-radius:10px; padding:20px 18px; width:min(92vw,360px); box-shadow:0 10px 30px rgba(0,0,0,.5); text-align:center; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Noto Sans", Arial, "Apple Color Emoji", "Segoe UI Emoji"; }
+    .card h1{ font-size:22px; margin:0 0 8px; letter-spacing:.5px; }
+    .card p{ margin:10px 0 16px; font-size:16px; opacity:.95; }
+    .card button{ appearance:none; border:0; border-radius:8px; padding:10px 14px; font-weight:700; font-size:16px; background:linear-gradient(#1aa3e8,#0c72b0); color:#fff; cursor:pointer; box-shadow:0 6px 14px rgba(0,0,0,.35); }
+    .hud{ position:fixed; left:50%; top:12px; transform:translateX(-50%); color:rgba(233,248,255,.9); font:700 14px/1 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; text-shadow:0 2px 0 rgba(0,0,0,.35); letter-spacing:.5px; user-select:none; pointer-events:none; }
+  </style>
+</head>
+<body>
+  <div id="game-wrap">
+    <canvas id="game" width="180" height="320" aria-label="Flappy Shark"></canvas>
+    <div id="overlay" role="dialog" aria-modal="true" aria-labelledby="over-title" aria-describedby="over-desc">
+      <div class="card">
+        <h1 id="over-title">Игра окончена</h1>
+        <p id="over-desc">Очки: <b id="score-final">0</b></p>
+        <button id="btn-restart" type="button">Сыграть ещё раз</button>
+      </div>
+    </div>
+    <div class="hud" id="hud">Нажми / коснись, чтобы играть</div>
+  </div>
+
+  <script>
+  (function(){
+    'use strict';
+    const W = 180, H = 320;
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = false;
+
+    const overlay = document.getElementById('overlay');
+    const scoreFinalEl = document.getElementById('score-final');
+    const restartBtn = document.getElementById('btn-restart');
+    const hud = document.getElementById('hud');
+
+    function resize(){
+      const scale = Math.max(1, Math.floor(Math.min(window.innerWidth / W, window.innerHeight / H)));
+      canvas.style.width = (W*scale)+'px';
+      canvas.style.height = (H*scale)+'px';
+    }
+    window.addEventListener('resize', resize); resize();
+
+    function clamp(v,a,b){ return v<a?a:(v>b?b:v); }
+
+    // ==== Фон (вода + пузырьки) ====
+    const bubbles = []; const BUBBLE_COUNT = 36;
+    function initBubbles(){
+      bubbles.length = 0;
+      for(let i=0;i<BUBBLE_COUNT;i++) bubbles.push({ x:Math.random()*W, y:Math.random()*H, r:1+Math.random()*2.5, v:12+Math.random()*20, drift:(Math.random()*2-1)*6 });
+    }
+    initBubbles();
+
+    function drawBackground(dt){
+      const bandH = 4;
+      for(let y=0;y<H;y+=bandH){
+        const t = y/H; const r=Math.floor(8+20*t), g=Math.floor(42+70*t), b=Math.floor(70+100*t);
+        ctx.fillStyle = `rgb(${r},${g},${b})`; ctx.fillRect(0,y,W,Math.min(bandH,H-y));
+      }
+      for(const b of bubbles){
+        b.y -= b.v*dt; b.x += Math.sin((performance.now()/1000 + b.y*0.02))*0.05*b.drift*dt;
+        if(b.y < -b.r){ b.y = H + b.r; b.x = Math.random()*W; }
+        ctx.fillStyle = 'rgba(220,245,255,0.85)';
+        ctx.fillRect(Math.round(b.x), Math.round(b.y), Math.max(1, Math.round(b.r)), 1);
+      }
+      ctx.fillStyle = '#0b3d5f';
+      for(let i=0;i<6;i++){
+        const baseX = (i*40 + Math.floor((performance.now()/85)%40)) % (W+40) - 20;
+        const h = 30 + (i%3)*12; ctx.fillRect(baseX, H-h, 6, h); ctx.fillRect(baseX+8, H-(h-8), 4, h-8);
+      }
+    }
+
+    // ==== Акула (спрайт) ====
+    const PAL = {'1':'#2a6785','2':'#5da7c7','3':'#bfe3f0','4':'#ffffff','5':'#000000','6':'#d93b3b','.' : 'transparent'};
+    const SHARK_FRAMES = [
+      ["....111111......","...11122211.....","..1122222211....",".112222222221...","11222233322211..","1122222222211...",".11122222211.....","...14.2211......","....5..11.......",],
+      ["....111111......","...11122211.....","..1122222211....",".112222222221...","11222233322211..","1122222222211...",".11122222211.....","...14.2211......",".....5.11.......",]
+    ];
+    function drawShark(x,y,rot,animT){
+      const frame = (animT % 0.30) < 0.15 ? 0 : 1; // ещё каплю плавнее хвост
+      const data = SHARK_FRAMES[frame]; const w=data[0].length, h=data.length;
+      ctx.save(); ctx.translate(Math.round(x),Math.round(y)); ctx.rotate(rot); ctx.translate(-Math.floor(w/2),-Math.floor(h/2));
+      for(let j=0;j<h;j++){ const row=data[j]; for(let i=0;i<w;i++){ const c=row[i]; if(c!=='.'){ ctx.fillStyle=PAL[c]; ctx.fillRect(i,j,1,1);} } }
+      ctx.restore();
+    }
+
+    // ==== Водоросли ====
+    const WEED_W = 26; const GAP_MIN = 68, GAP_MAX = 86; const TOP_MIN=24, BOTTOM_MIN=32;
+    function rr(a,b){ return a + Math.random()*(b-a); }
+    function makeObstacle(startX){ const gap=Math.round(rr(GAP_MIN,GAP_MAX)); const topHMax=H-BOTTOM_MIN-gap; const topH=Math.max(TOP_MIN, Math.round(rr(TOP_MIN, topHMax))); const bottomY=topH+gap; return {x:startX, gap, topH, bottomY, scored:false}; }
+    function drawWeedRect(x,y,w,h,flip){
+      ctx.fillStyle='#1d8a5b'; ctx.fillRect(x,y,w,h);
+      ctx.fillStyle='#27a369'; for(let i=2;i<w;i+=4) ctx.fillRect(x+i,y,1,h);
+      const crownH=6; if(!flip){ for(let i=0;i<w;i+=3){ ctx.fillStyle = i%2?'#27a369':'#1d8a5b'; ctx.fillRect(x+i,y+h,2,crownH-(i%4?0:1)); } }
+      else { for(let i=0;i<w;i+=3){ ctx.fillStyle = i%2?'#27a369':'#1d8a5b'; ctx.fillRect(x+i,y - crownH + (i%4?0:1),2,crownH); } }
+      ctx.fillStyle='#136845'; ctx.fillRect(x,y,1,h); ctx.fillRect(x+w-1,y,1,h);
+    }
+    function drawObstacle(o){ drawWeedRect(Math.round(o.x),0,WEED_W,o.topH,false); drawWeedRect(Math.round(o.x),o.bottomY,WEED_W,H-o.bottomY,true); }
+
+    // ==== Состояния и ТОНЬШЕ настроенная мягкая физика ====
+    const STATE={READY:0,PLAY:1,OVER:2}; let gameState=STATE.READY;
+
+    // Чуть быстрее уровень, ещё мягче вертикальная динамика.
+    const GRAVITY = 1300;     // было 1400 — ещё мягче притяжение
+    const FLAP_V  = -340;     // было -360 — рывок мягче
+    const MAX_VY  = 460;      // было 480 — ограничим падение ещё
+    const SPEED   = 60;       // было 56 — ЧУТЬ быстрее скролл
+    const AIR_DRAG = 0.9965;  // было 0.995 — сильнее сглаживание скорости
+
+    const shark = { x: Math.floor(W*0.35), y: Math.floor(H*0.5), vy: 0, rot: 0 };
+    const obstacles = []; let lastSpawnX=W+60; let score=0; let gameTime=0; let inOverCooldown=0;
+
+    function resetGame(){ shark.x=Math.floor(W*0.35); shark.y=Math.floor(H*0.5); shark.vy=0; shark.rot=0; obstacles.length=0; lastSpawnX=W+60; score=0; gameTime=0; inOverCooldown=0; overlay.classList.remove('show'); hud.textContent='Нажми / коснись, чтобы играть'; hud.style.display=''; }
+    function startPlay(){ if(gameState!==STATE.READY) return; gameState=STATE.PLAY; hud.style.display='none'; shark.vy=FLAP_V*0.6; obstacles.length=0; lastSpawnX=W+20; obstacles.push(makeObstacle(W+40)); obstacles.push(makeObstacle(W+40+120)); }
+    function gameOver(){ gameState=STATE.OVER; inOverCooldown=0.3; scoreFinalEl.textContent=String(score); overlay.classList.add('show'); hud.style.display='none'; }
+    function flap(){ if(gameState===STATE.READY){ startPlay(); return; } if(gameState!==STATE.PLAY) return; shark.vy = FLAP_V; }
+
+    function update(dt){ dt=Math.min(dt,0.04); gameTime+=dt; if(gameState===STATE.READY){ shark.y += Math.sin(gameTime*1.9)*0.8; shark.rot = Math.sin(gameTime*1.5)*0.085; return; } if(gameState!==STATE.PLAY) return;
+      const lastX = obstacles.length?obstacles[obstacles.length-1].x:lastSpawnX; if(lastX < W-118) obstacles.push(makeObstacle(W+20));
+      for(const o of obstacles) o.x -= SPEED*dt; while(obstacles.length && obstacles[0].x+WEED_W<-2) obstacles.shift();
+      // Физика с чуть большим демпфером
+      shark.vy = clamp((shark.vy + GRAVITY*dt)*AIR_DRAG, -9999, MAX_VY);
+      shark.y += shark.vy*dt; shark.y = clamp(shark.y, 0, H);
+      // Ещё плавнее поворот
+      const targetRot = shark.vy < 0 ? -0.32 : Math.min(0.70, 0.11 + (shark.vy/MAX_VY)*0.85);
+      const rotLerp = 1 - Math.pow(0.00008, dt); // немного медленнее реакция, ещё мягче
+      shark.rot += (targetRot - shark.rot) * rotLerp * 0.55;
+
+      const sx=shark.x, sy=shark.y; const sb={ x:sx-6, y:sy-4, w:12, h:8 };
+      for(const o of obstacles){
+        if(!o.scored && (o.x+WEED_W) < (sx-6)){ o.scored=true; score++; }
+        if(rectsIntersect(sb.x,sb.y,sb.w,sb.h, Math.round(o.x),0,WEED_W,o.topH)) return gameOver();
+        if(rectsIntersect(sb.x,sb.y,sb.w,sb.h, Math.round(o.x),o.bottomY,WEED_W,H-o.bottomY)) return gameOver();
+      }
+      if(sy<=0 || sy>=H) return gameOver();
+    }
+
+    function rectsIntersect(x1,y1,w1,h1,x2,y2,w2,h2){ return !(x2>x1+w1 || x2+w2<x1 || y2>y1+h1 || y2+h2<y1); }
+
+    function draw(){
+      drawShark(shark.x, shark.y, shark.rot, gameTime);
+      drawScore(score);
+      if(gameState===STATE.READY) drawHint();
+    }
+
+    const FONT = {
+      '0':["111","101","101","101","111"],'1':["010","110","010","010","111"],'2':["111","001","111","100","111"],'3':["111","001","111","001","111"],'4':["101","101","111","001","001"],'5':["111","100","111","001","111"],'6':["111","100","111","101","111"],'7':["111","001","010","100","100"],'8':["111","101","111","101","111"],'9':["111","101","111","001","111"]
+    };
+    function drawGlyph(ch,x,y,scale,col){ const g=FONT[ch]; if(!g) return 0; ctx.fillStyle=col; for(let j=0;j<g.length;j++){ const row=g[j]; for(let i=0;i<row.length;i++){ if(row[i]==='1') ctx.fillRect(x+i*scale,y+j*scale,scale,scale); } } return (g[0].length*scale); }
+    function drawText(str,x,y,scale=3,col='#e6fbff'){ let cx=x; for(const ch of String(str)){ cx += drawGlyph(ch,cx,y,scale,col) + scale; } }
+    function drawScore(n){ const s=String(n); const scale=3; const wGlyph=(3*scale)+scale; const totalW=s.length*wGlyph - scale; const x=Math.floor((W-totalW)/2); drawText(s,x,10,scale,'#e7faff'); }
+    function drawHint(){ const y=H*0.5+40; ctx.fillStyle='rgba(230,250,255,0.9)'; ctx.fillRect(W/2 - 1, y-16, 2, 12); ctx.fillRect(W/2 - 3, y-6, 6, 2); }
+
+    let last=performance.now();
+    function loop(now){ const dt=(now-last)/1000; last=now; drawBackground(dt); for(const o of obstacles){ drawObstacle(o); } update(dt); draw(); if(inOverCooldown>0) inOverCooldown-=dt; requestAnimationFrame(loop); }
+    requestAnimationFrame(loop);
+
+    function onPress(){ if(gameState===STATE.OVER){ if(inOverCooldown<=0) restart(); return; } flap(); }
+    function onKey(e){ const k=e.code; if(k==='Space'||k==='ArrowUp'||k==='KeyW'){ e.preventDefault(); onPress(); } if(k==='Enter' && gameState===STATE.OVER && inOverCooldown<=0){ restart(); } }
+    window.addEventListener('pointerdown', (e)=>{ e.preventDefault(); onPress(); }, {passive:false}); window.addEventListener('keydown', onKey);
+    restartBtn.addEventListener('click', ()=>{ restart(); });
+    function restart(){ resetGame(); gameState=STATE.READY; }
+    resetGame();
+  })();
+  </script>
+</body>
+</html>
